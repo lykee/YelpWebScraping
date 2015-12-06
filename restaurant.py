@@ -7,7 +7,7 @@
 		CityName2|Neighbourhood1
 		...
 		...
-# usage: restaurant_original.py [-h] -f FILENAME -s SEARCHTERM
+# usage: restaurant.py [-h] -f FILENAME -s SEARCHTERM
 
 	Scrape Data through Yelp API
 
