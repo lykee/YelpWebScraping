@@ -7,7 +7,7 @@
 		CityName2|Neighbourhood1
 		...
 		...
-# usage: restaurant.py [-h] -f FILENAME -s SEARCHTERM
+# usage: restaurant_original.py [-h] -f FILENAME -s SEARCHTERM
 
 	Scrape Data through Yelp API
 
@@ -36,15 +36,21 @@ import config
 import csv
 import time
 import getlocation
+from pymongo.errors import ConnectionFailure
+from pymongo import MongoClient
+
 
 # Global Variables Declaration
 API_HOST	= "api.yelp.com"
 SEARCH_PATH	= "/v2/search"
 BUSINESS_PATH	= "/v2/business/"
-SEARCH_LIMIT 	= 20
+# Number of business results to return
+SEARCH_LIMIT 	= 5
+# Offset the list of returned business results by this amount
 OFFSET_LIMIT	= 0
-SORT_TYPE	= 2
-MAX_LIMIT	= 40
+# Sort mode: 0=Best matched (default), 1=Distance, 2=Highest Rated.
+SORT_TYPE	= 0
+MAX_LIMIT	= 5
 TERM		= 'restaurants'
 INPUT_FILE_NAME	= ''
 
@@ -76,10 +82,16 @@ def request(host, path, urlParams=None):
 	
 	try:
 		response = json.loads(conn.read())
+		'''for k,v in response.items():
+			print k,v
+			if k=='business':
+				for i in v:
+					print i'''
 	finally:
 		conn.close()
 	
 	return response	
+
 
 
 # Declare search parameters to be passed to API
@@ -94,14 +106,21 @@ def search(location, longitude, latitude):
 			'sort'		: SORT_TYPE
 		}
 	return request(API_HOST, SEARCH_PATH, urlParams)
-	
 
-# Write Data to output file.
-def writeData(location, dataCategory):
-	with open('output/' + TERM + '.csv', 'a') as f:
-		fieldNames = ['ID', 'NAME', 'REVIEW_COUNT', 'RATING', 'LONGITUDE', 'LATITUDE', 'CITY', 'STATE', 'ZIP', 'COUNTRY', 'CATEGORY']	
-		writer = csv.DictWriter(f, fieldnames=fieldNames, delimiter='|')
-		writer.writerows(dataCategory)
+
+
+def mongoConnect():
+	global dbh
+
+	""" Connect to MongoDB """
+	try:
+		c = MongoClient(host="localhost", port=27017)
+		print "Connected successfully"
+	except ConnectionFailure, e:
+		sys.stderr.write("Could not connect to MongoDB: %s" % e)
+		sys.exit(1)
+	dbh = c["lykee"]
+
 	
 
 # Read the input file and transform the data -  creates a dictionary with CityName as key and NeighbourhoodNames list as its value
@@ -122,16 +141,14 @@ def getallNeighbourhoodData():
 
 # Scrape Data for each Neighbourhood
 def queryApi(city, neighbourhood = ''):
-	restaurantData = []
-	categoryData = []
-	tempRestaurantData = {}
-	tempCategoryData = {}
+
 	global OFFSET_LIMIT
 	global MAX_LIMIT
-	location = neighbourhood + ', ' + city + ', US'
 
+	location = neighbourhood + ', ' + city + ', US'
 	# Get longitude and latitude from Google Geocoding API V3 
-        longitude, latitude = getlocation.getCoordinates(location)
+	longitude, latitude = getlocation.getCoordinates(location)
+	
 	print location, longitude, latitude
 
 	# Call API twice for each neighbourhood (API response restricted to 20 records for each request) 
@@ -142,45 +159,22 @@ def queryApi(city, neighbourhood = ''):
 		allRestaurantData = response['businesses']
 		if len(allRestaurantData) > 0:
 			for restaurant in allRestaurantData:
-				tempRestaurantData['ID']		= restaurant['id'].encode('ascii', 'ignore')
-				tempRestaurantData['NAME']		= restaurant['name'].encode('ascii', 'ignore')
-				tempRestaurantData['REVIEW_COUNT']	= restaurant['review_count']
-				tempRestaurantData['RATING']		= restaurant['rating']
-				if restaurant['location'].get('coordinate'):
-					tempRestaurantData['LONGITUDE']		= restaurant['location']['coordinate']['longitude']
-					tempRestaurantData['LATITUDE']		= restaurant['location']['coordinate']['latitude']
-				else:
-	                                tempRestaurantData['LONGITUDE']         = 0.0
-        	                        tempRestaurantData['LATITUDE']          = 0.0
-				tempRestaurantData['CITY']		= restaurant['location']['city']
-				tempRestaurantData['STATE']		= restaurant['location']['state_code']
-				tempRestaurantData['ZIP']		= restaurant['location']['postal_code'] if restaurant['location'].get('postal_code') else 99999
-				tempRestaurantData['COUNTRY']		= restaurant['location']['country_code']
 				
-				tempRestaurantData['CATEGORY']		= ''	
-
-				# If Categories are present, store them as comma seperated strings
-				if restaurant.get('categories'):
-					for category in restaurant['categories']:
-						categoryData.append(category[1].encode('ascii', 'ignore'))					
-					
-					tempRestaurantData['CATEGORY'] = ",".join(categoryData)
-					categoryData = []
-
-			 	restaurantData.append(tempRestaurantData)
-				tempRestaurantData = {}
+				dbh.restaurant.insert(restaurant)#, safe=True)
+				
+				
 	
 			time.sleep(4)
 			OFFSET_LIMIT += 20
 	
 	# Write data for each neighbourhood. Maximum of 40 records
 	print 'Writing {0} records'.format(OFFSET_LIMIT)
-	writeData(city, restaurantData)
+	print dbh.restaurant.find().count()
+	
 	OFFSET_LIMIT = 0
 
 # Main function
 def main():
-
 
 	parser = argparse.ArgumentParser(description='Scrape Data through Yelp API');
 	parser.add_argument('-f', '--fileName', dest='fileName', type=str, help='Name of file containing neighbourhoods and their respective cities in a pipe-delimited fashion', required=True)
@@ -189,6 +183,8 @@ def main():
 
 	global INPUT_FILE_NAME 
 	global TERM
+	
+	mongoConnect()
 	INPUT_FILE_NAME = inputValues.fileName
 	TERM = inputValues.searchTerm
 
